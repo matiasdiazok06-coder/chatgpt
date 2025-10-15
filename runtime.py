@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import select
 import sys
 import threading
 import time
 from pathlib import Path
-
 
 STOP_EVENT = threading.Event()
 
@@ -50,7 +50,6 @@ def ensure_logging(
             file_handler.setFormatter(formatter)
             handlers.append(file_handler)
         except Exception:
-            # Si no puede crear el archivo, continúa con la salida estándar.
             pass
 
     stream_handler = logging.StreamHandler()
@@ -94,3 +93,16 @@ def start_q_listener(message: str, logger: logging.Logger) -> threading.Thread:
     listener.start()
     return listener
 
+
+def jitter_delay(min_seconds: int, max_seconds: int) -> int:
+    if max_seconds <= min_seconds:
+        return max(min_seconds, 0)
+    return random.randint(min_seconds, max_seconds)
+
+
+def sleep_with_stop(total_seconds: int, *, step: float = 1.0) -> None:
+    slept = 0.0
+    while slept < total_seconds and not STOP_EVENT.is_set():
+        interval = min(step, total_seconds - slept)
+        time.sleep(interval)
+        slept += interval

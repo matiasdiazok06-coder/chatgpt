@@ -3,19 +3,62 @@
 from __future__ import annotations
 
 import logging
+import queue
 import random
 import threading
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 from accounts import list_all, mark_connected, prompt_login
 from config import SETTINGS
 from leads import load_list
-from runtime import STOP_EVENT, ensure_logging, request_stop, reset_stop_event, start_q_listener
-from storage import already_contacted, log_sent, sent_totals
-from utils import ask, ask_int, banner, press_enter, warn
+from runtime import (
+    STOP_EVENT,
+    ensure_logging,
+    jitter_delay,
+    request_stop,
+    reset_stop_event,
+    sleep_with_stop,
+    start_q_listener,
+)
 from session_store import has_session, load_into
+from storage import already_contacted, log_sent, sent_totals
+from ui import Fore, LiveTable, banner, full_line, highlight, style_text
+from utils import ask, ask_int, press_enter, warn
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SendEvent:
+    username: str
+    lead: str
+    success: bool
+    detail: str
+    attention: str | None = None
+
+
+_LIVE_COUNTS = {"base_ok": 0, "base_fail": 0, "run_ok": 0, "run_fail": 0}
+_LIVE_LOCK = threading.Lock()
+
+
+def _reset_live_counters(reset_run: bool = True) -> None:
+    base_ok, base_fail = sent_totals()
+    with _LIVE_LOCK:
+        _LIVE_COUNTS["base_ok"] = base_ok
+        _LIVE_COUNTS["base_fail"] = base_fail
+        if reset_run:
+            _LIVE_COUNTS["run_ok"] = 0
+            _LIVE_COUNTS["run_fail"] = 0
+
+
+def get_message_totals() -> tuple[int, int]:
+    with _LIVE_LOCK:
+        ok_total = _LIVE_COUNTS["base_ok"] + _LIVE_COUNTS["run_ok"]
+        error_total = _LIVE_COUNTS["base_fail"] + _LIVE_COUNTS["run_fail"]
+    return ok_total, error_total
 
 
 def _client_for(username: str):
@@ -46,165 +89,115 @@ def _ensure_session(username: str) -> bool:
         return False
 
 
-logger = logging.getLogger(__name__)
-
-_LIVE_COUNTS = {"base_ok": 0, "base_fail": 0, "run_ok": 0, "run_fail": 0}
-_LIVE_LOCK = threading.Lock()
-
-
-def _reset_live_counters(reset_run: bool = True) -> None:
-    base_ok, base_fail = sent_totals()
-    with _LIVE_LOCK:
-        _LIVE_COUNTS["base_ok"] = base_ok
-        _LIVE_COUNTS["base_fail"] = base_fail
-        if reset_run:
-            _LIVE_COUNTS["run_ok"] = 0
-            _LIVE_COUNTS["run_fail"] = 0
-
-
-def get_message_totals() -> tuple[int, int]:
-    with _LIVE_LOCK:
-        ok_total = _LIVE_COUNTS["base_ok"] + _LIVE_COUNTS["run_ok"]
-        error_total = _LIVE_COUNTS["base_fail"] + _LIVE_COUNTS["run_fail"]
-    return ok_total, error_total
-
-
 def _send_dm(cl, to_username: str, message: str) -> bool:
     try:
-        # Minimizar ruido: envolvemos en try sin mostrar trazas del lib
         uid = cl.user_id_from_username(to_username)
         cl.direct_send(message, [uid])
         return True
-    except Exception as e:
-        # Algunos entornos tienen warning 'update_headers', igual suele enviar.
-        logger.debug("Error enviando DM: %s", e, exc_info=False)
+    except Exception as exc:
+        logger.debug("Error enviando DM a @%s: %s", to_username, exc, exc_info=False)
         return False
 
 
-def _send_job(
-    account: Dict,
-    lead: str,
-    message: str,
-    delay_min: int,
-    delay_max: int,
-    semaphore: threading.Semaphore,
+def _diagnose_exception(exc: Exception) -> str | None:
+    text = str(exc).lower()
+    mapping = {
+        "login_required": "Instagram solicitó un nuevo login.",
+        "challenge_required": "Se requiere resolver un challenge en la app.",
+        "feedback_required": "Instagram bloqueó temporalmente acciones de esta cuenta.",
+        "rate_limit": "Se alcanzó un rate limit. Conviene pausar unos minutos.",
+        "checkpoint": "Instagram requiere verificación adicional (checkpoint).",
+        "consent_required": "La sesión requiere aprobación en la app oficial.",
+    }
+    for key, message in mapping.items():
+        if key in text:
+            return message
+    return None
+
+
+def _render_progress(
+    alias: str,
+    leads_left: int,
+    success_totals: Dict[str, int],
+    failed_totals: Dict[str, int],
+    live_table: LiveTable,
+) -> None:
+    banner()
+    ok_total, err_total = get_message_totals()
+    print(full_line())
+    print(style_text(f"Alias: {alias}", color=Fore.CYAN, bold=True))
+    print(style_text(f"Leads pendientes: {leads_left}", bold=True))
+    print(full_line())
+    print(style_text("Totales por cuenta (ésta campaña)", color=Fore.CYAN, bold=True))
+    for username in sorted(set(success_totals) | set(failed_totals)):
+        ok_run = success_totals.get(username, 0)
+        fail_run = failed_totals.get(username, 0)
+        print(f" @{username}: {ok_run} OK / {fail_run} errores")
+    print(full_line())
+    print(style_text("Envíos en vuelo", color=Fore.CYAN, bold=True))
+    print(live_table.render())
+    print(full_line())
+    ok_line = style_text(f"Mensajes enviados: {ok_total}", color=Fore.GREEN, bold=True)
+    err_line = style_text(f"Mensajes con error: {err_total}", color=Fore.RED, bold=True)
+    print(ok_line)
+    print(err_line)
+    print(full_line())
+
+
+def _handle_event(
+    event: SendEvent,
     success: Dict[str, int],
     failed: Dict[str, int],
-    lock: threading.Lock,
-) -> None:
-    username = account["username"]
-    try:
-        if STOP_EVENT.is_set():
-            return
-        try:
-            cl = _client_for(username)
-            okflag = _send_dm(cl, lead, message)
-        except Exception as exc:
-            logger.debug("Fallo inesperado con @%s → @%s: %s", username, lead, exc, exc_info=False)
-            okflag = False
-
-        with lock:
-            if okflag:
-                log_sent(username, lead, True, "")
-                success[username] += 1
-                with _LIVE_LOCK:
-                    _LIVE_COUNTS["run_ok"] += 1
-                    ok_total = _LIVE_COUNTS["base_ok"] + _LIVE_COUNTS["run_ok"]
-                    err_total = _LIVE_COUNTS["base_fail"] + _LIVE_COUNTS["run_fail"]
-                summary = (
-                    f"Mensaje enviado a @{lead} (cuenta @{username}) | "
-                    f"Totales OK: {ok_total}, errores: {err_total}"
-                )
-                logger.info(summary)
-                if SETTINGS.quiet:
-                    print(summary)
-            else:
-                log_sent(username, lead, False, "envío falló")
-                failed[username] += 1
-                with _LIVE_LOCK:
-                    _LIVE_COUNTS["run_fail"] += 1
-                    ok_total = _LIVE_COUNTS["base_ok"] + _LIVE_COUNTS["run_ok"]
-                    err_total = _LIVE_COUNTS["base_fail"] + _LIVE_COUNTS["run_fail"]
-                summary = (
-                    f"Error al enviar a @{lead} (cuenta @{username}) | "
-                    f"Totales OK: {ok_total}, errores: {err_total}"
-                )
-                logger.warning(summary)
-
-        wait_time = delay_min if delay_max <= delay_min else random.randint(delay_min, delay_max)
-        logger.debug("Esperando %ss antes del próximo envío de @%s", wait_time, username)
-        slept = 0
-        while slept < wait_time and not STOP_EVENT.is_set():
-            time.sleep(1)
-            slept += 1
-    finally:
-        semaphore.release()
-
-
-def _clamp(value: int, minimum: int, maximum: int) -> int:
-    return max(minimum, min(maximum, value))
-
-
-def _any_capacity(remaining: Dict[str, int]) -> bool:
-    return any(v > 0 for v in remaining.values())
-
-
-def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
-    ensure_logging(
-        quiet=SETTINGS.quiet,
-        log_dir=SETTINGS.log_dir,
-        log_file=SETTINGS.log_file,
-    )
-    reset_stop_event()
-    banner()
-    _reset_live_counters()
-
-    settings = SETTINGS
-
-    alias = ask("Alias/grupo: ").strip() or "default"
-    listname = ask("Nombre de la lista (text/leads/<nombre>.txt): ").strip()
-
-    per_acc_input = ask_int("¿Cuántos mensajes por cuenta? ", 1, settings.max_per_account)
-    per_acc = _clamp(per_acc_input, 1, settings.max_per_account)
-    if per_acc < per_acc_input:
-        warn(f"Límite por cuenta ajustado a {per_acc} (MAX_PER_ACCOUNT)")
-
-    if concurrency_override is not None:
-        concurr_input = max(1, concurrency_override)
-        print(f"Concurrencia forzada: {concurr_input}")
+    live_table: LiveTable,
+    remaining: Dict[str, int],
+) -> Optional[str]:
+    username = event.username
+    if event.success:
+        success[username] += 1
+        detail = ""
+        live_table.complete(username, True, detail)
+        log_sent(username, event.lead, True, detail)
+        with _LIVE_LOCK:
+            _LIVE_COUNTS["run_ok"] += 1
+        summary = style_text(
+            f"✅ @{username} → @{event.lead}", color=Fore.GREEN, bold=True
+        )
+        print(summary)
     else:
-        concurr_input = ask_int("Cuentas en simultáneo: ", 1, settings.max_concurrency)
-    concurr = _clamp(concurr_input, 1, settings.max_concurrency)
-    if concurr < concurr_input:
-        warn(f"Concurrencia limitada a {concurr} (MAX_CONCURRENCY)")
-    elif concurrency_override is not None:
-        print(f"Concurrencia efectiva: {concurr}")
+        failed[username] += 1
+        detail = event.detail or "envío falló"
+        live_table.complete(username, False, detail)
+        log_sent(username, event.lead, False, detail)
+        with _LIVE_LOCK:
+            _LIVE_COUNTS["run_fail"] += 1
+        summary = style_text(
+            f"❌ @{username} → @{event.lead} ({detail})", color=Fore.RED, bold=True
+        )
+        print(summary)
+    if event.attention:
+        print(full_line(char="=", color=Fore.RED, bold=True))
+        print(highlight(f"Atención en @{username}", color=Fore.RED))
+        print(event.attention)
+        print(full_line(char="=", color=Fore.RED, bold=True))
+        print("[1] Continuar sin esta cuenta")
+        print("[2] Pausar todo")
+        choice = ask("Opción: ").strip() or "1"
+        if choice == "1":
+            remaining[username] = 0
+            warn(f"Se omitirá @{username} en esta campaña.")
+            return "continue"
+        else:
+            request_stop(f"usuario decidió pausar tras incidente con @{username}")
+            return "stop"
+    return None
 
-    dmin_input = ask_int("Delay mínimo (seg): ", 0, settings.delay_min)
-    dmax_default = max(settings.delay_max, dmin_input)
-    dmax_input = ask_int("Delay máximo (seg): ", dmin_input, dmax_default)
-    delay_min = max(settings.delay_min, dmin_input)
-    delay_max = _clamp(dmax_input, delay_min, settings.delay_max)
-    if delay_min != dmin_input:
-        warn(f"Delay mínimo ajustado a {delay_min}s")
-    if delay_max != dmax_input:
-        warn(f"Delay máximo ajustado a {delay_max}s")
 
-    print("Escribí plantillas (una por línea). Línea vacía para terminar:")
-    templates: list[str] = []
-    while True:
-        s = ask("")
-        if not s:
-            break
-        templates.append(s)
-    if not templates:
-        templates = ["hola!"]
-
+def _build_accounts_for_alias(alias: str) -> list[Dict]:
     all_acc = [a for a in list_all() if a.get("alias") == alias and a.get("active")]
     if not all_acc:
         warn("No hay cuentas activas en ese alias.")
         press_enter()
-        return
+        return []
 
     verified: list[Dict] = []
     needing_login: list[tuple[Dict, str]] = []
@@ -224,16 +217,105 @@ def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
             print(f" - @{account['username']}: {reason}")
         if ask("¿Iniciar sesión ahora? (s/N): ").strip().lower() == "s":
             for account, _ in needing_login:
-                if prompt_login(account["username"]):
-                    if _ensure_session(account["username"]):
+                if prompt_login(account["username"]) and _ensure_session(account["username"]):
+                    if account not in verified:
                         verified.append(account)
         else:
             warn("Se omitieron las cuentas sin sesión válida.")
 
-    all_acc = verified
-    if not all_acc:
+    if not verified:
         warn("No hay cuentas con sesión válida para enviar mensajes.")
         press_enter()
+    return verified
+
+
+def _schedule_inputs(settings, concurrency_override: Optional[int]) -> tuple[int, int, int, int, list[str]]:
+    alias = ask("Alias/grupo: ").strip() or "default"
+    listname = ask("Nombre de la lista (text/leads/<nombre>.txt): ").strip()
+
+    per_acc_default = min(settings.max_per_account, 50)
+    per_acc_input = ask_int(
+        f"¿Cuántos mensajes por cuenta? [{per_acc_default}]: ",
+        1,
+        default=per_acc_default,
+    )
+    if per_acc_input < 2:
+        warn("El mínimo recomendado es 2 por cuenta. Se ajusta automáticamente.")
+    if per_acc_input > settings.max_per_account:
+        warn(f"Se ajusta a MAX_PER_ACCOUNT ({settings.max_per_account}).")
+    per_acc = max(2, min(per_acc_input, settings.max_per_account))
+
+    if concurrency_override is not None:
+        concurr_input = max(1, concurrency_override)
+        print(f"Concurrencia forzada: {concurr_input}")
+    else:
+        concurr_input = ask_int(
+            f"Cuentas en simultáneo? [hasta {settings.max_concurrency}]: ",
+            1,
+            default=settings.max_concurrency,
+        )
+    if concurr_input < 1:
+        warn("La concurrencia mínima es 1. Se ajusta a 1.")
+    if concurr_input > settings.max_concurrency:
+        warn(f"Se ajusta a MAX_CONCURRENCY ({settings.max_concurrency}).")
+    concurr = max(1, min(concurr_input, settings.max_concurrency))
+
+    dmin_default = max(10, settings.delay_min)
+    dmin_input = ask_int(
+        f"Delay mínimo (seg) [{dmin_default}]: ",
+        1,
+        default=dmin_default,
+    )
+    if dmin_input < 10:
+        warn("El delay mínimo recomendado es 10s. Se ajusta automáticamente.")
+    delay_min = max(10, dmin_input)
+
+    dmax_default = max(delay_min, settings.delay_max)
+    dmax_input = ask_int(
+        f"Delay máximo (seg) [>= {delay_min}, por defecto {dmax_default}]: ",
+        delay_min,
+        default=dmax_default,
+    )
+    if dmax_input < delay_min:
+        warn("Delay máximo ajustado al mínimo indicado.")
+    delay_max = max(delay_min, dmax_input)
+
+    print("Escribí plantillas (una por línea). Línea vacía para terminar:")
+    templates: list[str] = []
+    while True:
+        s = ask("")
+        if not s:
+            break
+        templates.append(s)
+    if not templates:
+        templates = ["hola!"]
+
+    return alias, listname, per_acc, concurr, delay_min, delay_max, templates
+
+
+def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
+    ensure_logging(
+        quiet=SETTINGS.quiet,
+        log_dir=SETTINGS.log_dir,
+        log_file=SETTINGS.log_file,
+    )
+    reset_stop_event()
+    banner()
+    _reset_live_counters()
+    settings = SETTINGS
+
+    (
+        alias,
+        listname,
+        per_acc,
+        concurr,
+        delay_min,
+        delay_max,
+        templates,
+    ) = _schedule_inputs(settings, concurrency_override)
+
+    accounts = _build_accounts_for_alias(alias)
+    if not accounts:
         return
 
     users = deque([u for u in load_list(listname) if not already_contacted(u)])
@@ -242,22 +324,83 @@ def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
         press_enter()
         return
 
-    remaining = {a["username"]: per_acc for a in all_acc}
+    remaining = {a["username"]: per_acc for a in accounts}
     success = defaultdict(int)
     failed = defaultdict(int)
-    lock = threading.Lock()
     semaphore = threading.Semaphore(concurr)
+    account_locks = {a["username"]: threading.Lock() for a in accounts}
+    result_queue: queue.Queue[SendEvent] = queue.Queue()
+    live_table = LiveTable(max_entries=concurr)
+
     listener = start_q_listener("Presioná Q para detener la campaña.", logger)
     threads: list[threading.Thread] = []
 
     logger.info(
         "Iniciando campaña con %d cuentas activas y %d leads pendientes. Límite/cuenta: %d, concurrencia: %d, delay: %s-%ss",
-        len(all_acc), len(users), per_acc, concurr, delay_min, delay_max,
+        len(accounts),
+        len(users),
+        per_acc,
+        concurr,
+        delay_min,
+        delay_max,
     )
 
+    def _worker(account: Dict, lead: str, message: str, account_lock: threading.Lock) -> None:
+        username = account["username"]
+        attention_message: str | None = None
+        detail = ""
+        success_flag = False
+        try:
+            if STOP_EVENT.is_set():
+                return
+            cl = _client_for(username)
+            success_flag = _send_dm(cl, lead, message)
+            if not success_flag:
+                detail = "envío falló"
+        except Exception as exc:  # pragma: no cover - external SDK
+            detail = str(exc)
+            attention_message = _diagnose_exception(exc)
+            logger.warning(
+                "Fallo inesperado con @%s → @%s: %s", username, lead, exc, exc_info=False
+            )
+        finally:
+            result_queue.put(
+                SendEvent(
+                    username=username,
+                    lead=lead,
+                    success=success_flag,
+                    detail=detail,
+                    attention=attention_message,
+                )
+            )
+            wait_time = jitter_delay(delay_min, delay_max)
+            logger.debug(
+                "Esperando %ss antes del próximo envío de @%s", wait_time, username
+            )
+            if wait_time > 0:
+                sleep_with_stop(wait_time)
+            account_lock.release()
+            semaphore.release()
+
     try:
-        while users and _any_capacity(remaining) and not STOP_EVENT.is_set():
-            for account in all_acc:
+        last_render = 0.0
+        while users and any(v > 0 for v in remaining.values()) and not STOP_EVENT.is_set():
+            need_render = False
+            # procesar resultados pendientes
+            try:
+                while True:
+                    event = result_queue.get_nowait()
+                    action = _handle_event(event, success, failed, live_table, remaining)
+                    need_render = True
+                    if action == "stop":
+                        break
+            except queue.Empty:
+                pass
+
+            if STOP_EVENT.is_set():
+                break
+
+            for account in accounts:
                 if STOP_EVENT.is_set():
                     break
                 username = account["username"]
@@ -265,38 +408,51 @@ def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
                     continue
                 if not users:
                     break
-                lead = users.popleft()
-                message = random.choice(templates)
-
-                acquired = semaphore.acquire(timeout=0.5)
-                if not acquired:
-                    users.appendleft(lead)
+                account_lock = account_locks[username]
+                if not account_lock.acquire(blocking=False):
                     continue
 
+                acquired = semaphore.acquire(timeout=0.1)
+                if not acquired:
+                    account_lock.release()
+                    continue
+
+                lead = users.popleft()
+                message = random.choice(templates)
                 remaining[username] -= 1
-                logger.debug(
-                    "Programado envío desde @%s hacia @%s (restan %d)",
-                    username,
-                    lead,
-                    remaining[username],
-                )
+                live_table.begin(username, lead)
                 thread = threading.Thread(
-                    target=_send_job,
-                    args=(account, lead, message, delay_min, delay_max, semaphore, success, failed, lock),
+                    target=_worker,
+                    args=(account, lead, message, account_lock),
                     daemon=True,
                 )
                 thread.start()
                 threads.append(thread)
 
-                if not users or STOP_EVENT.is_set():
+                if STOP_EVENT.is_set():
                     break
+
+            now = time.time()
+            if need_render or now - last_render > 0.5:
+                _render_progress(alias, len(users), success, failed, live_table)
+                last_render = now
             time.sleep(0.1)
+
+        # drenar eventos restantes
+        while True:
+            try:
+                event = result_queue.get(timeout=0.5)
+                _handle_event(event, success, failed, live_table, remaining)
+                _render_progress(alias, len(users), success, failed, live_table)
+            except queue.Empty:
+                break
+
     except KeyboardInterrupt:
         request_stop("interrupción con Ctrl+C")
     finally:
         if not users:
             request_stop("no quedan leads por procesar")
-        elif not _any_capacity(remaining):
+        elif not any(v > 0 for v in remaining.values()):
             request_stop("se alcanzó el límite de envíos por cuenta")
 
         for t in threads:
@@ -305,11 +461,12 @@ def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
             listener.join(timeout=0.1)
 
         _reset_live_counters()
+        _render_progress(alias, len(users), success, failed, live_table)
 
     print("\n== Resumen ==")
     total_ok = sum(success.values())
     print(f"OK: {total_ok}")
-    for account in all_acc:
+    for account in accounts:
         user = account["username"]
         print(f" - {user}: {success[user]} enviados, {failed[user]} errores")
     if STOP_EVENT.is_set():
