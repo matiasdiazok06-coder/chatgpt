@@ -211,3 +211,4 @@ def menu_autoresponder():
         print(full_line())
         print(highlight("Auto-responder detenido", color=Fore.YELLOW))
         press_enter()
+

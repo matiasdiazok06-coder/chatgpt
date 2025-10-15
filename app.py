@@ -68,6 +68,19 @@ def _print_dashboard() -> None:
     print(line)
 
 
+def _message_totals():
+    if ig and hasattr(ig, "get_message_totals"):
+        try:
+            return ig.get_message_totals()
+        except Exception:
+            pass
+    if storage and hasattr(storage, "sent_totals"):
+        try:
+            return storage.sent_totals()
+        except Exception:
+            pass
+    return 0,0
+
 def menu():
     while True:
         _print_dashboard()
