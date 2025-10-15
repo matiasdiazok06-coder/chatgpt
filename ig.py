@@ -173,10 +173,10 @@ def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
         concurr_input = max(1, concurrency_override)
         print(f"Concurrencia forzada: {concurr_input}")
     else:
-        concurr_input = ask_int("Cuentas en simultáneo: ", 1, settings.max_concurrent)
-    concurr = _clamp(concurr_input, 1, settings.max_concurrent)
+        concurr_input = ask_int("Cuentas en simultáneo: ", 1, settings.max_concurrency)
+    concurr = _clamp(concurr_input, 1, settings.max_concurrency)
     if concurr < concurr_input:
-        warn(f"Concurrencia limitada a {concurr} (MAX_CONCURRENT)")
+        warn(f"Concurrencia limitada a {concurr} (MAX_CONCURRENCY)")
     elif concurrency_override is not None:
         print(f"Concurrencia efectiva: {concurr}")
 

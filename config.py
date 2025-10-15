@@ -57,7 +57,7 @@ def _coerce_path(value: str | None, default: Path) -> Path:
 @dataclass(frozen=True)
 class Settings:
     max_per_account: int = 10
-    max_concurrent: int = 5
+    max_concurrency: int = 5
     delay_min: int = 5
     delay_max: int = 15
     autoresponder_delay: int = 10
@@ -72,7 +72,10 @@ def load_settings() -> Settings:
     defaults = Settings()
     return Settings(
         max_per_account=_coerce_int(env_values.get("MAX_PER_ACCOUNT", ""), defaults.max_per_account),
-        max_concurrent=_coerce_int(env_values.get("MAX_CONCURRENT", ""), defaults.max_concurrent),
+        max_concurrency=_coerce_int(
+            env_values.get("MAX_CONCURRENCY", ""),
+            defaults.max_concurrency,
+        ),
         delay_min=_coerce_int(env_values.get("DELAY_MIN", ""), defaults.delay_min),
         delay_max=_coerce_int(env_values.get("DELAY_MAX", ""), defaults.delay_max),
         autoresponder_delay=_coerce_int(env_values.get("AUTORESPONDER_DELAY", ""), defaults.autoresponder_delay),
