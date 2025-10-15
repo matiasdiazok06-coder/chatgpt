@@ -10,6 +10,7 @@ import select
 import sys
 import threading
 import time
+from pathlib import Path
 
 
 STOP_EVENT = threading.Event()
@@ -26,13 +27,42 @@ def request_stop(reason: str) -> None:
         STOP_EVENT.set()
 
 
-def ensure_logging(level: int = logging.INFO) -> None:
+def ensure_logging(
+    level: int = logging.INFO,
+    *,
+    quiet: bool = False,
+    log_dir: Path | None = None,
+    log_file: str = "app.log",
+) -> None:
     root = logging.getLogger()
-    if not root.handlers:
-        logging.basicConfig(
-            level=level,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        )
+    if root.handlers:
+        return
+
+    root.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    handlers: list[logging.Handler] = []
+    if log_dir:
+        try:
+            Path(log_dir).mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(Path(log_dir) / log_file, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            handlers.append(file_handler)
+        except Exception:
+            # Si no puede crear el archivo, continúa con la salida estándar.
+            pass
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(level if not quiet else logging.WARNING)
+    stream_handler.setFormatter(formatter)
+    handlers.append(stream_handler)
+
+    for handler in handlers:
+        root.addHandler(handler)
+
+    logging.getLogger("instagrapi").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def start_q_listener(message: str, logger: logging.Logger) -> threading.Thread:

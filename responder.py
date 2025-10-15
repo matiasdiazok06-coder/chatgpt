@@ -1,27 +1,44 @@
 # responder.py
 # -*- coding: utf-8 -*-
-import os, time, random, json, logging
-from pathlib import Path
+from __future__ import annotations
+
+import logging
+import os
+import time
 from utils import banner, ask, ask_int, press_enter, warn, em
-from accounts import list_all
+from accounts import list_all, mark_connected, prompt_login
 from storage import get_auto_state, save_auto_state
 from config import SETTINGS
 from runtime import STOP_EVENT, ensure_logging, request_stop, reset_stop_event, start_q_listener
+from session_store import has_session, load_into
 
 
 def _client_for(username: str):
     from instagrapi import Client
 
     cl = Client()
-    ses = Path(__file__).resolve().parent / ".sessions" / f"{username}.json"
-    if not ses.exists():
-        raise RuntimeError(f"No hay sesión para {username}.")
-    cl.load_settings(str(ses))
+    try:
+        load_into(cl, username)
+    except FileNotFoundError as exc:
+        mark_connected(username, False)
+        raise RuntimeError(f"No hay sesión para {username}.") from exc
     try:
         cl.get_timeline_feed()
-    except Exception:
-        pass
+        mark_connected(username, True)
+    except Exception as exc:
+        mark_connected(username, False)
+        raise RuntimeError(
+            f"La sesión guardada para {username} no es válida. Iniciá sesión nuevamente."
+        ) from exc
     return cl
+
+
+def _ensure_session(username: str) -> bool:
+    try:
+        _client_for(username)
+        return True
+    except Exception:
+        return False
 
 
 logger = logging.getLogger(__name__)
@@ -48,48 +65,94 @@ def _gen_response(api_key: str, system_prompt: str, convo_text: str) -> str:
 
 
 def menu_autoresponder():
-    ensure_logging()
+    ensure_logging(
+        quiet=SETTINGS.quiet,
+        log_dir=SETTINGS.log_dir,
+        log_file=SETTINGS.log_file,
+    )
     reset_stop_event()
     banner()
     alias = ask("Alias/usuario con sesión guardada (o 'ALL' para todas activas): ").strip() or "ALL"
-    default_api_key = os.environ.get("OPENAI_API_KEY", "")
-    api_input = ask("Pegá tu OPENAI_API_KEY (Enter para usar la de entorno): ").strip()
-    api_key = api_input or default_api_key
-    if not api_key:
-        warn("Necesitás definir OPENAI_API_KEY para enviar respuestas automáticas.")
-        press_enter()
-        return
-    if not api_input and default_api_key:
-        logger.info("Usando OPENAI_API_KEY obtenida desde el entorno.")
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if api_key:
+        logger.info("Usando OPENAI_API_KEY desde la configuración cargada.")
+    else:
+        api_key = ask("Pegá tu OPENAI_API_KEY: ").strip()
+        if not api_key:
+            warn("Necesitás definir OPENAI_API_KEY para enviar respuestas automáticas.")
+            press_enter()
+            return
     system_prompt = ask("Instrucciones del bot (system prompt): ").strip() or "Respondé cordial, breve y como humano."
     delay_default = max(1, SETTINGS.autoresponder_delay)
     delay = ask_int("Delay entre chequeos (seg, ej 10): ", 1, delay_default)
 
     state = get_auto_state()  # {account: {thread_id: last_msg_id}}
 
-    targets = []
+    accounts_data = list_all()
+    alias_key = alias.lstrip("@")
+    alias_lower = alias_key.lower()
+
+    targets: list[str]
     if alias.upper() == "ALL":
-        targets = [a["username"] for a in list_all() if a.get("active")]
+        targets = [a["username"] for a in accounts_data if a.get("active")]
     else:
-        targets = [alias]
+        alias_matches = [
+            a for a in accounts_data if a.get("alias", "").lower() == alias_lower and a.get("active")
+        ]
+        if alias_matches:
+            targets = [a["username"] for a in alias_matches]
+        else:
+            username_matches = [
+                a for a in accounts_data if a.get("username", "").lower() == alias_lower and a.get("active")
+            ]
+            if username_matches:
+                targets = [username_matches[0]["username"]]
+            else:
+                targets = [alias_key]
+
+    deduped: list[str] = []
+    seen = set()
+    for user in targets:
+        norm = user.lstrip("@")
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(norm)
+    targets = deduped
 
     if not targets:
         warn("No se encontraron cuentas activas para iniciar el auto-responder.")
         press_enter()
         return
 
-    active_targets = []
+    verified: list[str] = []
+    needing_login: list[tuple[str, str]] = []
     for user in targets:
-        try:
-            _client_for(user)
-            active_targets.append(user)
-        except Exception as e:
-            warn(str(e))
+        if not has_session(user):
+            needing_login.append((user, "sin sesión guardada"))
+            continue
+        if not _ensure_session(user):
+            needing_login.append((user, "sesión expirada"))
+            continue
+        verified.append(user)
 
-    if not active_targets:
+    if needing_login:
+        print("\nLas siguientes cuentas necesitan volver a iniciar sesión:")
+        for user, reason in needing_login:
+            print(f" - @{user}: {reason}")
+        if ask("¿Iniciar sesión ahora? (s/N): ").strip().lower() == "s":
+            for user, _ in needing_login:
+                if prompt_login(user) and _ensure_session(user):
+                    if user not in verified:
+                        verified.append(user)
+        else:
+            warn("Se omitieron las cuentas sin sesión válida.")
+
+    if not verified:
         warn("Ninguna cuenta tiene sesión válida.")
         press_enter()
         return
+
+    active_targets = verified
 
     listener = start_q_listener("Presioná Q para detener el auto-responder.", logger)
     logger.info("Auto-responder activo para %d cuentas. Delay: %ss", len(active_targets), delay)
