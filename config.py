@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from dotenv import dotenv_values, load_dotenv
 
 _ROOT = Path(__file__).resolve().parent
 _ENV_FILENAMES = (".env", ".env.local")
+_CONFIG_FILE = _ROOT / "storage" / "config.json"
 
 
 def _load_file_values() -> Dict[str, str]:
@@ -140,6 +142,31 @@ def update_env_local(updates: Dict[str, str]) -> Path:
     lines = [f"{key}={value}" for key, value in sorted(current.items())]
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return path
+
+
+def read_app_config() -> Dict[str, str]:
+    if not _CONFIG_FILE.exists():
+        return {}
+    try:
+        return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def update_app_config(updates: Dict[str, str]) -> Dict[str, str]:
+    current = read_app_config()
+    current.update({k: v for k, v in updates.items() if v is not None})
+    _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_FILE.write_text(
+        json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return current
+
+
+def refresh_settings() -> Settings:
+    global SETTINGS
+    SETTINGS = load_settings()
+    return SETTINGS
 
 
 SETTINGS = load_settings()

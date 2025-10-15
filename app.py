@@ -47,11 +47,11 @@ def _print_dashboard() -> None:
     total, connected, active = _counts()
     ok_total, err_total = _message_totals()
 
-    line = full_line()
+    line = full_line(color=Fore.BLUE)
     print(line)
     print(style_text(f"Cuentas totales: {total}", bold=True))
-    print(style_text(f"Conectadas: {connected}", color=Fore.GREEN if connected else Fore.WHITE))
-    print(style_text(f"Activas: {active}", color=Fore.CYAN if active else Fore.WHITE))
+    print(style_text(f"Conectadas: {connected}", color=Fore.GREEN if connected else Fore.WHITE, bold=True))
+    print(style_text(f"Activas: {active}", color=Fore.CYAN if active else Fore.WHITE, bold=True))
     print(line)
     print_metrics(ok_total, err_total)
     print(line)
@@ -67,19 +67,6 @@ def _print_dashboard() -> None:
     print()
     print(line)
 
-
-def _message_totals():
-    if ig and hasattr(ig, "get_message_totals"):
-        try:
-            return ig.get_message_totals()
-        except Exception:
-            pass
-    if storage and hasattr(storage, "sent_totals"):
-        try:
-            return storage.sent_totals()
-        except Exception:
-            pass
-    return 0,0
 
 def menu():
     while True:

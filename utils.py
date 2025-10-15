@@ -4,9 +4,6 @@
 
 from __future__ import annotations
 
-import os
-from typing import Optional
-
 from typing import Optional
 
 from ui import (
@@ -41,6 +38,20 @@ def ask(prompt: str) -> str:
         return input(prompt)
     except EOFError:
         return ""
+
+
+def ask_multiline(prompt: str) -> str:
+    """Solicita texto multilínea hasta recibir una línea vacía."""
+
+    print(prompt)
+    print(style_text("(Línea vacía para finalizar)", color=Fore.CYAN))
+    lines: list[str] = []
+    while True:
+        line = ask("› ")
+        if line == "":
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def press_enter(msg: str = "Presioná Enter para continuar...") -> None:
@@ -88,3 +99,4 @@ def bullet(msg: str) -> None:
 def env_hint(key: str, value: str | None) -> str:
     shown = value if value else "(sin definir)"
     return f"{key} = {shown}"
+

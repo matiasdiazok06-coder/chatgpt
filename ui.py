@@ -80,11 +80,15 @@ def clear_console() -> None:
 
 def print_header() -> None:
     clear_console()
-    line = full_line("═", color=Fore.MAGENTA, bold=True)
-    print(line)
-    title = style_text(em("🏆 HERRAMIENTA DE MENSAJERÍA DE IG 🏆"), color=Fore.MAGENTA, bold=True)
-    print(title.center(max(80, terminal_width())))
-    print(line)
+    width = max(60, terminal_width())
+    print()
+    print(full_line("═", color=Fore.MAGENTA))
+    title = style_text(
+        em("🏆 HERRAMIENTA DE MENSAJERÍA DE IG 🏆"), color=Fore.MAGENTA, bold=True
+    )
+    print(title.center(width))
+    print(full_line("═", color=Fore.MAGENTA))
+    print()
 
 
 def print_metrics(sent: int, errors: int) -> None:
@@ -92,12 +96,13 @@ def print_metrics(sent: int, errors: int) -> None:
     fail = style_text(f"Mensajes con error: {errors}", color=Fore.RED, bold=True)
     print(ok)
     print(fail)
+    print()
 
 
 def print_section(title: str) -> None:
-    print(full_line())
+    print(full_line(color=Fore.BLUE))
     print(style_text(title, color=Fore.CYAN, bold=True))
-    print(full_line())
+    print(full_line(color=Fore.BLUE))
 
 
 def banner() -> None:
