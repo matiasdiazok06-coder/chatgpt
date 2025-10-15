@@ -26,6 +26,24 @@ def already_contacted(username:str)->bool:
         except Exception: pass
     return False
 
+
+def sent_totals() -> tuple[int, int]:
+    """Devuelve totales acumulados de envíos OK y con error."""
+    if not SENT.exists():
+        return 0, 0
+    ok_count = 0
+    error_count = 0
+    for line in SENT.read_text(encoding="utf-8").splitlines():
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("ok"):
+            ok_count += 1
+        else:
+            error_count += 1
+    return ok_count, error_count
+
 def menu_logs():
     banner()
     title("Últimos envíos:")

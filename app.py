@@ -25,11 +25,27 @@ def _counts():
     except Exception:
         return 0,0,0
 
+def _message_totals():
+    if ig and hasattr(ig, "get_message_totals"):
+        try:
+            return ig.get_message_totals()
+        except Exception:
+            pass
+    if storage and hasattr(storage, "sent_totals"):
+        try:
+            return storage.sent_totals()
+        except Exception:
+            pass
+    return 0,0
+
 def menu():
     while True:
         banner()
         n,c,a=_counts()
+        ok_total, err_total = _message_totals()
         print(f"Cuentas: {n}\nConectadas: {c}\nActivas: {a}\n")
+        print(f"Mensajes enviados: {ok_total}")
+        print(f"Mensajes con error: {err_total}\n")
         print(SEP); print(SEP); print()
         print("1) "+em("🔐")+" Gestionar cuentas")
         print("2) "+em("🗂️")+" Gestionar leads (crear / importar CSV)")
