@@ -1,0 +1,4 @@
+instagrapi
+openai
+colorama
+pyinstaller
