@@ -1,4 +1,5 @@
-instagrapi
-openai
-colorama
-pyinstaller
+instagrapi==1.17.10
+openai>=1.12.0,<2.0.0
+colorama==0.4.6
+pyinstaller==6.3.0
+python-dotenv==1.0.1
