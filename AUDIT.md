@@ -3,6 +3,7 @@
 ## Cambios incorporados en esta iteración
 - Se consolidó la configuración en `config.py` con validaciones de rango (concurrencia 1-20, envíos por cuenta 2-50, delays >=10s) y lectura prioritaria de `.env.local`.
 - Se añadió `ui.py` con cabecera a color, divisores a ancho completo, métricas en verde/rojo y tabla en vivo de cuentas "en vuelo".
+- Se agregó soporte opcional de proxies por cuenta con prueba integrada, sticky configurable y fallback silencioso al modo directo.
 - El flujo de envío (`ig.py`) ahora ofrece modo silencioso real con logs a `storage/logs/app.log`, seguimiento concurrente con semáforos por cuenta, tabla de progreso y manejo de errores interactivo (continuar o pausar).
 - El auto-responder (`responder.py`) ofrece submenú para guardar la API key y el system prompt, activar por alias, detener con Q y mostrar un resumen final mientras guarda logs silenciosos.
 - El menú Supabase incorpora submenú para configurar URL/KEY, probar estado y persistir cambios en `.env.local`.
@@ -29,7 +30,8 @@
 -6. En el menú Supabase (opción 6), configurar URL y KEY, probar conexión y verificar que se escriben en `.env.local`.
 -7. Configurar API key y system prompt desde el menú 5, reiniciar la app y confirmar que los valores persisten.
 -8. Activar el auto-responder para un alias con varias cuentas, responder mensajes y detener con Q verificando el resumen final.
--9. En la opción 7 crear una licencia nueva, confirmar que la tabla `licenses` existe o seguir las instrucciones para crearla, y verificar que se generan tanto el ejecutable como el `.zip` limpio sin datos del desarrollador.
+-9. Configurar un proxy desde "Gestionar cuentas", probarlo (botón incluido), ejecutar un envío y validar en `storage/logs/app.log` que se registran IP enmascarada y latencia.
+-10. En la opción 7 crear una licencia nueva, confirmar que la tabla `licenses` existe o seguir las instrucciones para crearla, y verificar que se generan tanto el ejecutable como el `.zip` limpio sin datos del desarrollador.
 
 ## Próximos pasos sugeridos
 - Añadir pruebas automatizadas que cubran el flujo con cuentas simuladas y validen el manejo interactivo de errores.

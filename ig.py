@@ -11,9 +11,10 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from accounts import list_all, mark_connected, prompt_login
+from accounts import get_account, list_all, mark_connected, prompt_login
 from config import SETTINGS
 from leads import load_list
+from proxy_manager import apply_proxy_to_client, record_proxy_failure, should_retry_proxy
 from runtime import (
     STOP_EVENT,
     ensure_logging,
@@ -64,16 +65,36 @@ def get_message_totals() -> tuple[int, int]:
 def _client_for(username: str):
     from instagrapi import Client
 
+    account = get_account(username)
     cl = Client()
+    binding = None
+    try:
+        binding = apply_proxy_to_client(cl, username, account, reason="envio")
+    except Exception as exc:
+        if account and account.get("proxy_url"):
+            record_proxy_failure(username, exc)
+            raise RuntimeError(
+                f"El proxy configurado para @{username} no respondió: {exc}"
+            ) from exc
+        logger.warning("Proxy no disponible para @%s: %s", username, exc, exc_info=False)
+
     try:
         load_into(cl, username)
     except FileNotFoundError as exc:
         mark_connected(username, False)
         raise RuntimeError(f"No hay sesión guardada para {username}. Usá opción 1.") from exc
+    except Exception as exc:
+        if binding and should_retry_proxy(exc):
+            record_proxy_failure(username, exc)
+        mark_connected(username, False)
+        raise
+
     try:
         cl.get_timeline_feed()
         mark_connected(username, True)
     except Exception as exc:
+        if binding and should_retry_proxy(exc):
+            record_proxy_failure(username, exc)
         mark_connected(username, False)
         raise RuntimeError(
             f"La sesión guardada para {username} no es válida. Iniciá sesión nuevamente."
@@ -95,6 +116,8 @@ def _send_dm(cl, to_username: str, message: str) -> bool:
         cl.direct_send(message, [uid])
         return True
     except Exception as exc:
+        if should_retry_proxy(exc):
+            raise
         logger.debug("Error enviando DM a @%s: %s", to_username, exc, exc_info=False)
         return False
 
@@ -350,19 +373,53 @@ def menu_send_rotating(concurrency_override: Optional[int] = None) -> None:
         attention_message: str | None = None
         detail = ""
         success_flag = False
+        max_retries = 3
+        retries = 0
         try:
             if STOP_EVENT.is_set():
                 return
-            cl = _client_for(username)
-            success_flag = _send_dm(cl, lead, message)
-            if not success_flag:
+            while not STOP_EVENT.is_set():
+                try:
+                    cl = _client_for(username)
+                    success_flag = _send_dm(cl, lead, message)
+                    if not success_flag:
+                        detail = "envío falló"
+                    break
+                except Exception as exc:  # pragma: no cover - external SDK
+                    if should_retry_proxy(exc):
+                        retries += 1
+                        record_proxy_failure(username, exc)
+                        wait_retry = min(30, 5 * retries)
+                        logger.warning(
+                            "Proxy error con @%s → @%s (intento %d/%d): %s",
+                            username,
+                            lead,
+                            retries,
+                            max_retries,
+                            exc,
+                            exc_info=False,
+                        )
+                        if retries >= max_retries:
+                            detail = "proxy sin respuesta"
+                            attention_message = (
+                                "El proxy configurado para @"
+                                f"{username} falló repetidamente. Revisá la opción 1 para actualizarlo o quitarlo."
+                            )
+                            break
+                        sleep_with_stop(wait_retry)
+                        continue
+                    detail = str(exc)
+                    attention_message = _diagnose_exception(exc)
+                    logger.warning(
+                        "Fallo inesperado con @%s → @%s: %s",
+                        username,
+                        lead,
+                        exc,
+                        exc_info=False,
+                    )
+                    break
+            if not success_flag and not detail:
                 detail = "envío falló"
-        except Exception as exc:  # pragma: no cover - external SDK
-            detail = str(exc)
-            attention_message = _diagnose_exception(exc)
-            logger.warning(
-                "Fallo inesperado con @%s → @%s: %s", username, lead, exc, exc_info=False
-            )
         finally:
             result_queue.put(
                 SendEvent(

@@ -51,14 +51,26 @@ def terminal_width(fallback: int = 80) -> int:
         return fallback
 
 
+def panel_width() -> int:
+    width = terminal_width()
+    if width >= 100:
+        return 90
+    if width >= 70:
+        return width - 6
+    return width
+
+
+def panel_padding() -> str:
+    width = panel_width()
+    total = terminal_width()
+    return " " * max(0, (total - width) // 2)
+
+
 def full_line(char: str = "─", *, color: str | None = None, bold: bool = False) -> str:
-    width = max(20, terminal_width())
-    text = char * width
-    if color:
-        text = f"{color}{text}{Style.RESET_ALL}"
-    if bold:
-        text = f"{Style.BRIGHT}{text}{Style.RESET_ALL}"
-    return text
+    width = max(20, panel_width())
+    base = char * width
+    styled = style_text(base, color=color, bold=bold)
+    return f"{panel_padding()}{styled}"
 
 
 def style_text(text: str, *, color: str | None = None, bold: bool = False) -> str:
@@ -80,28 +92,28 @@ def clear_console() -> None:
 
 def print_header() -> None:
     clear_console()
-    width = max(60, terminal_width())
     print()
-    print(full_line("═", color=Fore.MAGENTA))
-    title = style_text(
+    print(full_line("═", color=Fore.MAGENTA, bold=True))
+    heading = style_text(
         em("🏆 HERRAMIENTA DE MENSAJERÍA DE IG 🏆"), color=Fore.MAGENTA, bold=True
     )
-    print(title.center(width))
-    print(full_line("═", color=Fore.MAGENTA))
+    print(f"{panel_padding()}{heading}")
+    print(full_line("─", color=Fore.MAGENTA))
     print()
 
 
 def print_metrics(sent: int, errors: int) -> None:
     ok = style_text(f"Mensajes enviados: {sent}", color=Fore.GREEN, bold=True)
     fail = style_text(f"Mensajes con error: {errors}", color=Fore.RED, bold=True)
-    print(ok)
-    print(fail)
+    pad = panel_padding()
+    print(f"{pad}{ok}")
+    print(f"{pad}{fail}")
     print()
 
 
 def print_section(title: str) -> None:
     print(full_line(color=Fore.BLUE))
-    print(style_text(title, color=Fore.CYAN, bold=True))
+    print(f"{panel_padding()}{style_text(title, color=Fore.CYAN, bold=True)}")
     print(full_line(color=Fore.BLUE))
 
 
@@ -201,6 +213,6 @@ class LiveTable:
     def render(self) -> str:
         rows = self.rows()
         if not rows:
-            return style_text("Sin envíos en vuelo", color=Fore.WHITE)
-        formatted = format_table(rows)
+            return f"{panel_padding()}{style_text('Sin envíos en vuelo', color=Fore.WHITE)}"
+        formatted = [panel_padding() + row for row in format_table(rows)]
         return "\n".join(formatted)

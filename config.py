@@ -72,6 +72,10 @@ class Settings:
     supabase_key: str = ""
     openai_api_key: str = ""
     client_distribution: bool = False
+    proxy_default_url: str = ""
+    proxy_default_user: str = ""
+    proxy_default_pass: str = ""
+    proxy_sticky_minutes: int = 10
 
 
 def _validated_ranges(values: Dict[str, str]) -> Tuple[int, int, int, int]:
@@ -124,6 +128,15 @@ def load_settings() -> Settings:
         openai_api_key=env_values.get("OPENAI_API_KEY", ""),
         client_distribution=_coerce_bool(
             env_values.get("CLIENT_DISTRIBUTION"), defaults.client_distribution
+        ),
+        proxy_default_url=env_values.get("PROXY_DEFAULT_URL", defaults.proxy_default_url),
+        proxy_default_user=env_values.get("PROXY_DEFAULT_USER", defaults.proxy_default_user),
+        proxy_default_pass=env_values.get("PROXY_DEFAULT_PASS", defaults.proxy_default_pass),
+        proxy_sticky_minutes=max(
+            1,
+            _coerce_int(
+                env_values.get("PROXY_STICKY_MINUTES"), defaults.proxy_sticky_minutes
+            ),
         ),
     )
 

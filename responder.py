@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List
 
-from accounts import list_all, mark_connected, prompt_login
+from accounts import get_account, list_all, mark_connected, prompt_login
 from config import (
     SETTINGS,
     read_app_config,
@@ -12,6 +12,7 @@ from config import (
     update_app_config,
     update_env_local,
 )
+from proxy_manager import apply_proxy_to_client, record_proxy_failure, should_retry_proxy
 from runtime import (
     STOP_EVENT,
     ensure_logging,
@@ -51,16 +52,33 @@ class BotStats:
 def _client_for(username: str):
     from instagrapi import Client
 
+    account = get_account(username)
     cl = Client()
+    binding = None
+    try:
+        binding = apply_proxy_to_client(cl, username, account, reason="autoresponder")
+    except Exception as exc:
+        if account and account.get("proxy_url"):
+            record_proxy_failure(username, exc)
+            raise RuntimeError(f"El proxy de @{username} no respondió: {exc}") from exc
+        logger.warning("Proxy no disponible para @%s: %s", username, exc, exc_info=False)
+
     try:
         load_into(cl, username)
     except FileNotFoundError as exc:
         mark_connected(username, False)
         raise RuntimeError(f"No hay sesión para {username}.") from exc
+    except Exception as exc:
+        if binding and should_retry_proxy(exc):
+            record_proxy_failure(username, exc)
+        mark_connected(username, False)
+        raise
     try:
         cl.get_timeline_feed()
         mark_connected(username, True)
     except Exception as exc:
+        if binding and should_retry_proxy(exc):
+            record_proxy_failure(username, exc)
         mark_connected(username, False)
         raise RuntimeError(
             f"La sesión guardada para {username} no es válida. Iniciá sesión nuevamente."
@@ -268,15 +286,23 @@ def _prompt_alias_selection() -> str | None:
 
 def _handle_account_issue(user: str, exc: Exception, active: List[str]) -> None:
     message = str(exc).lower()
-    if "login_required" in message:
+    if should_retry_proxy(exc):
+        label = style_text(f"[WARN][@{user}] proxy falló", color=Fore.YELLOW, bold=True)
+        record_proxy_failure(user, exc)
+        print(label)
+        warn("Revisá la opción 1 para actualizar o quitar el proxy de esta cuenta.")
+    elif "login_required" in message:
         label = style_text(f"[ERROR][@{user}] sesión inválida", color=Fore.RED, bold=True)
+        print(label)
     elif any(key in message for key in ("challenge", "checkpoint")):
         label = style_text(f"[WARN][@{user}] checkpoint requerido", color=Fore.YELLOW, bold=True)
+        print(label)
     elif "feedback_required" in message or "rate" in message:
         label = style_text(f"[WARN][@{user}] rate limit detectado", color=Fore.YELLOW, bold=True)
+        print(label)
     else:
         label = style_text(f"[WARN][@{user}] error inesperado", color=Fore.YELLOW, bold=True)
-    print(label)
+        print(label)
     logger.warning("Incidente con @%s en auto-responder: %s", user, exc, exc_info=False)
 
     while True:
