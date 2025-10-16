@@ -31,6 +31,9 @@ def supports_emojis_default() -> bool:
 EMOJI_ON = supports_emojis_default()
 
 
+DEFAULT_BOLD = True
+
+
 def em(text: str) -> str:
     if EMOJI_ON:
         return text
@@ -89,10 +92,11 @@ def _align_label_value(text: str) -> str:
 def style_text(text: str, *, color: str | None = None, bold: bool = False) -> str:
     text = _align_label_value(text)
     prefix = ""
-    suffix = Style.RESET_ALL if color or bold else ""
+    use_bold = bold or DEFAULT_BOLD
+    suffix = Style.RESET_ALL if color or use_bold else ""
     if color:
         prefix += color
-    if bold:
+    if use_bold:
         prefix += Style.BRIGHT
     return f"{prefix}{text}{suffix}"
 
@@ -109,31 +113,26 @@ def print_header() -> None:
     pad = panel_padding()
     print()
     heading = style_text(
-        em("🏆  HERRAMIENTA DE MENSAJERÍA DE IG  🏆"), color=Fore.MAGENTA, bold=True
+        em("🏆  HERRAMIENTA DE MENSAJERÍA DE IG  -  PROPIEDAD DE MATIDIAZLIFE/ELITE 🏆"),
+        color=Fore.MAGENTA,
+        bold=True,
     )
     print(f"{pad}{heading}")
     print(full_line("─", color=Fore.MAGENTA, bold=True))
     print()
-    section = style_text(em("📊  ESTADO GENERAL"), color=Fore.CYAN, bold=True)
-    print(f"{pad}{section}")
 
 
 def print_metrics(sent: int, errors: int) -> None:
-    pad = panel_padding()
-    title = style_text(em("📨  MENSAJERÍA"), color=Fore.CYAN, bold=True)
-    print(f"{pad}{title}")
-    print(full_line(color=Fore.BLUE))
-    ok = style_text(f"Mensajes enviados: {sent}", color=Fore.GREEN, bold=True)
-    fail = style_text(f"Mensajes con error: {errors}", color=Fore.RED, bold=True)
-    print(f"{pad}{ok}")
-    print(f"{pad}{fail}")
+    # Maintained for compatibility with older calls; no output needed in the new layout.
+    return
 
 
 def print_daily_metrics(sent: int, errors: int, tz_label: str, last_reset: str) -> None:
     pad = panel_padding()
     title = style_text(em("📨  MENSAJERÍA (HOY)"), color=Fore.CYAN, bold=True)
+    divider = full_line(color=Fore.BLUE, bold=True)
     print(f"{pad}{title}")
-    print(full_line(color=Fore.BLUE))
+    print(divider)
     ok = style_text(f"Mensajes enviados (HOY): {sent}", color=Fore.GREEN, bold=True)
     fail = style_text(f"Mensajes con error (HOY): {errors}", color=Fore.RED, bold=True)
     tz_line = style_text(
@@ -142,6 +141,7 @@ def print_daily_metrics(sent: int, errors: int, tz_label: str, last_reset: str) 
     print(f"{pad}{ok}")
     print(f"{pad}{fail}")
     print(f"{pad}{tz_line}")
+    print(divider)
 
 
 def print_section(title: str) -> None:

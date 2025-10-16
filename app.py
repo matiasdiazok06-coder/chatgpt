@@ -4,8 +4,8 @@ import importlib
 import time
 
 from config import SETTINGS
-from storage import sent_totals, sent_totals_today
-from ui import Fore, full_line, print_daily_metrics, print_header, print_metrics, style_text
+from storage import sent_totals_today
+from ui import Fore, full_line, print_daily_metrics, print_header, style_text
 from utils import ask, em, press_enter, warn
 
 
@@ -36,26 +36,18 @@ def _counts():
         return 0, 0, 0
 
 
-def _message_totals():
-    try:
-        return sent_totals()
-    except Exception:
-        return 0, 0
-
-
 def _print_dashboard() -> None:
     print_header()
     total, connected, active = _counts()
-    ok_total, err_total = _message_totals()
     sent_today, err_today, last_reset, tz_label = sent_totals_today()
 
-    line = full_line(color=Fore.BLUE)
+    line = full_line(color=Fore.BLUE, bold=True)
+    section = style_text(em("📊  ESTADO GENERAL"), color=Fore.CYAN, bold=True)
+    print(section)
     print(line)
     print(style_text(f"Cuentas totales: {total}", bold=True))
     print(style_text(f"Conectadas: {connected}", color=Fore.GREEN if connected else Fore.WHITE, bold=True))
     print(style_text(f"Activas: {active}", color=Fore.CYAN if active else Fore.WHITE, bold=True))
-    print(line)
-    print_metrics(ok_total, err_total)
     print(line)
     print_daily_metrics(
         sent_today,
@@ -63,17 +55,20 @@ def _print_dashboard() -> None:
         tz_label,
         last_reset,
     )
-    print(line)
     print()
-    print(f"1) {em('🔐')} Gestionar cuentas")
-    print(f"2) {em('🗂️')} Gestionar leads (crear / importar CSV)")
-    print(f"3) {em('💬')} Enviar mensajes (rotando cuentas activas)")
-    print(f"4) {em('📜')} Ver registros de envíos")
-    print(f"5) {em('🤖')} Auto-responder con OpenAI")
-    print(f"6) {em('📊')} Configurar Supabase")
+    options = [
+        f"1) {em('🔐')} Gestionar cuentas  ",
+        f"2) {em('🗂️')} Gestionar leads (crear / importar CSV)  ",
+        f"3) {em('💬')} Enviar mensajes (rotando cuentas activas)  ",
+        f"4) {em('📜')} Ver registros de envíos  ",
+        f"5) {em('🤖')} Auto-responder con OpenAI  ",
+        f"6) {em('📊')} Configurar Supabase  ",
+    ]
     if not SETTINGS.client_distribution:
-        print(f"7) {em('📦')} Entregar a cliente (licencia / EXE)")
-    print(f"8) {em('🚪')} Salir")
+        options.append(f"7) {em('📦')} Entregar a cliente (licencia / EXE)  ")
+    options.append(f"8) {em('🚪')} Salir  ")
+    for text in options:
+        print(style_text(text))
     print()
     print(line)
 
