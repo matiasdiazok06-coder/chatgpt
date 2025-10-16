@@ -4,8 +4,8 @@ import importlib
 import time
 
 from config import SETTINGS
-from storage import sent_totals
-from ui import Fore, full_line, print_header, print_metrics, style_text
+from storage import sent_totals, sent_totals_today
+from ui import Fore, full_line, print_daily_metrics, print_header, print_metrics, style_text
 from utils import ask, em, press_enter, warn
 
 
@@ -47,6 +47,7 @@ def _print_dashboard() -> None:
     print_header()
     total, connected, active = _counts()
     ok_total, err_total = _message_totals()
+    sent_today, err_today, last_reset, tz_label = sent_totals_today()
 
     line = full_line(color=Fore.BLUE)
     print(line)
@@ -55,6 +56,13 @@ def _print_dashboard() -> None:
     print(style_text(f"Activas: {active}", color=Fore.CYAN if active else Fore.WHITE, bold=True))
     print(line)
     print_metrics(ok_total, err_total)
+    print(line)
+    print_daily_metrics(
+        sent_today,
+        err_today,
+        tz_label,
+        last_reset,
+    )
     print(line)
     print()
     print(f"1) {em('🔐')} Gestionar cuentas")

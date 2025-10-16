@@ -129,6 +129,21 @@ def print_metrics(sent: int, errors: int) -> None:
     print(f"{pad}{fail}")
 
 
+def print_daily_metrics(sent: int, errors: int, tz_label: str, last_reset: str) -> None:
+    pad = panel_padding()
+    title = style_text(em("📨  MENSAJERÍA (HOY)"), color=Fore.CYAN, bold=True)
+    print(f"{pad}{title}")
+    print(full_line(color=Fore.BLUE))
+    ok = style_text(f"Mensajes enviados (HOY): {sent}", color=Fore.GREEN, bold=True)
+    fail = style_text(f"Mensajes con error (HOY): {errors}", color=Fore.RED, bold=True)
+    tz_line = style_text(
+        f"Zona horaria: {tz_label} • Último reset: {last_reset}", color=Fore.WHITE
+    )
+    print(f"{pad}{ok}")
+    print(f"{pad}{fail}")
+    print(f"{pad}{tz_line}")
+
+
 def print_section(title: str) -> None:
     print(full_line(color=Fore.BLUE))
     print(f"{panel_padding()}{style_text(title, color=Fore.CYAN, bold=True)}")
