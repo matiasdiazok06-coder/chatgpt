@@ -8,7 +8,7 @@
 - El auto-responder (`responder.py`) ofrece submenú para guardar la API key y el system prompt, activar por alias, detener con Q y mostrar un resumen final mientras guarda logs silenciosos.
 - El menú Supabase incorpora submenú para configurar URL/KEY, probar estado y persistir cambios en `.env.local`.
 - `.env.example` documenta las nuevas variables (QUIET, MAX_CONCURRENCY, rangos de delay, claves de OpenAI/Supabase) y advierte sobre `CLIENT_DISTRIBUTION` para builds licenciados.
-- El panel de licencias (opción 7) valida la existencia de la tabla en Supabase, maneja estados `active/expired/revoked`, permite revocar, reactivar o eliminar claves y genera bundles limpios + ejecutables con la licencia incrustada.
+- El panel de licencias (opción 7) ahora guía la creación de la tabla en Supabase, permite pausar/reactivar, extender o eliminar licencias, empaquetar builds limpias desde el menú y expone un script `scripts/package_client.py` para generar entregables por línea de comandos.
 
 ## Riesgos y consideraciones
 - Instagram puede exigir re-autenticación (`login_required`, `challenge_required`, etc.). Ahora el flujo pregunta si continuar sin la cuenta o pausar, pero sigue dependiendo de la intervención manual para resolver el challenge.
@@ -31,7 +31,8 @@
 -7. Configurar API key y system prompt desde el menú 5, reiniciar la app y confirmar que los valores persisten.
 -8. Activar el auto-responder para un alias con varias cuentas, responder mensajes y detener con Q verificando el resumen final.
 -9. Configurar un proxy desde "Gestionar cuentas", probarlo (botón incluido), ejecutar un envío y validar en `storage/logs/app.log` que se registran IP enmascarada y latencia.
--10. En la opción 7 crear una licencia nueva, confirmar que la tabla `licenses` existe o seguir las instrucciones para crearla, y verificar que se generan tanto el ejecutable como el `.zip` limpio sin datos del desarrollador.
+-10. En la opción 7 crear una licencia nueva, confirmar o crear la tabla `licenses`, pausar/activar la licencia, empaquetar el build y comprobar que la distribución generada está limpia.
+-11. Ejecutar `python scripts/package_client.py` (opcionalmente pasando `--license <key>`) para generar un paquete desde la terminal y verificar el mensaje con la ruta final.
 
 ## Próximos pasos sugeridos
 - Añadir pruebas automatizadas que cubran el flujo con cuentas simuladas y validen el manejo interactivo de errores.

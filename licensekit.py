@@ -15,7 +15,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
-from config import SETTINGS, read_env_local
+from config import SETTINGS, read_env_local, refresh_settings, update_env_local
+from supabase_migrations import ensure_licenses_table as run_ensure_licenses_table
 from ui import Fore, banner, full_line, style_text
 from utils import ask, ask_int, ok, press_enter, warn
 
@@ -23,6 +24,7 @@ _TABLE = "licenses"
 _DATE_FMT = "%Y-%m-%d"
 _STATUS_ACTIVE = "active"
 _STATUS_EXPIRED = "expired"
+_STATUS_PAUSED = "paused"
 _STATUS_REVOKED = "revoked"
 _TABLE_SQL = textwrap.dedent(
     """
@@ -73,12 +75,32 @@ def _load_local_payload() -> Dict[str, Any]:
         return {}
 
 
-def _ensure_supabase() -> Tuple[bool, Optional[str], Optional[str]]:
+def _ensure_supabase(*, interactive: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
     url, key = _supabase_credentials()
-    if not url or not key:
-        warn("Configurá SUPABASE_URL y SUPABASE_KEY desde la opción 6 antes de usar licencias.")
+    if url and key:
+        return True, url, key
+
+    if not interactive:
+        return False, url or None, key or None
+
+    warn("Faltan SUPABASE_URL y/o SUPABASE_KEY.")
+    confirm = ask("¿Querés configurarlos ahora? (s/N): ").strip().lower()
+    if confirm != "s":
+        warn("Operación cancelada.")
         press_enter()
         return False, None, None
+
+    url = ask("SUPABASE_URL: ").strip()
+    key = ask("SUPABASE_KEY: ").strip()
+    if not url or not key:
+        warn("Se requieren ambos valores.")
+        press_enter()
+        return False, None, None
+
+    update_env_local({"SUPABASE_URL": url, "SUPABASE_KEY": key})
+    refresh_settings()
+    ok("Credenciales guardadas en .env.local.")
+    press_enter()
     return True, url, key
 
 
@@ -143,7 +165,7 @@ def _request(
         return response.text, None, response.status_code
 
 
-def _ensure_table_ready(url: str, key: str) -> bool:
+def _ensure_table_ready(url: str, key: str, *, interactive: bool = True) -> bool:
     _, error, status = _request(
         "get",
         f"{_TABLE}?select=license_key&limit=1",
@@ -151,6 +173,27 @@ def _ensure_table_ready(url: str, key: str) -> bool:
         key_override=key,
     )
     if _is_missing_table(error, status):
+        if interactive:
+            warn("La tabla de licencias no existe en Supabase.")
+            choice = ask("¿Crear tabla automáticamente? (s/N): ").strip().lower()
+            if choice == "s":
+                created, message = run_ensure_licenses_table(url, key)
+                if created:
+                    ok("Tabla 'licenses' creada en Supabase.")
+                    _, error, status = _request(
+                        "get",
+                        f"{_TABLE}?select=license_key&limit=1",
+                        url_override=url,
+                        key_override=key,
+                    )
+                    if not error:
+                        return True
+                else:
+                    warn(message)
+                    press_enter()
+            else:
+                _show_missing_table_help()
+            return False
         _show_missing_table_help()
         return False
     if error:
@@ -184,6 +227,8 @@ def _status_label(record: Dict[str, Any]) -> Tuple[str, str]:
     status = str(record.get("status", "")).lower()
     if status == _STATUS_REVOKED:
         return "Revocada", Fore.RED
+    if status == _STATUS_PAUSED:
+        return "Pausada", Fore.YELLOW
     if status == _STATUS_EXPIRED or _is_expired(record):
         return "Vencida", Fore.YELLOW
     return "Activa", Fore.GREEN
@@ -338,44 +383,46 @@ def _delete_license(record: Dict[str, Any]) -> None:
     press_enter()
 
 
-def _handle_existing() -> None:
-    records = _fetch_licenses()
-    if not records:
-        press_enter()
-        return
-    record = _select_license(records)
-    if not record:
-        return
+def _license_actions_loop(license_key: str) -> None:
     while True:
+        record = _fetch_single(license_key)
+        if not record:
+            warn("No se encontró la licencia seleccionada.")
+            press_enter()
+            return
         banner()
         print(full_line())
         print(style_text("Gestión de licencia", color=Fore.CYAN, bold=True))
         print(full_line())
         _render_table([record])
         print("1) Extender vigencia")
-        print("2) Revocar licencia")
-        print("3) Reactivar licencia")
-        print("4) Eliminar licencia")
-        print("5) Volver")
+        print("2) Pausar licencia")
+        print("3) Activar licencia")
+        print("4) Revocar licencia")
+        print("5) Eliminar licencia")
+        print("6) Volver")
         choice = ask("Opción: ").strip()
         status = str(record.get("status", "")).lower()
         if choice == "1":
             _extend_license(record)
-            record = _fetch_single(record["license_key"]) or record
         elif choice == "2":
-            _update_status(record, _STATUS_REVOKED, "revocar")
-            record = _fetch_single(record["license_key"]) or record
+            if status == _STATUS_PAUSED:
+                warn("La licencia ya está en pausa.")
+                press_enter()
+            else:
+                _update_status(record, _STATUS_PAUSED, "pausar")
         elif choice == "3":
             if status == _STATUS_ACTIVE:
                 warn("La licencia ya está activa.")
                 press_enter()
             else:
-                _update_status(record, _STATUS_ACTIVE, "reactivar")
-                record = _fetch_single(record["license_key"]) or record
+                _update_status(record, _STATUS_ACTIVE, "activar")
         elif choice == "4":
+            _update_status(record, _STATUS_REVOKED, "revocar")
+        elif choice == "5":
             _delete_license(record)
             break
-        elif choice == "5":
+        elif choice == "6":
             break
         else:
             warn("Opción inválida.")
@@ -397,18 +444,26 @@ def _generate_key() -> str:
     return secrets.token_urlsafe(18)
 
 
-def _build_executable(record: Dict[str, Any], url: str, key: str) -> None:
-    choice = ask("¿Generar ejecutable para esta licencia? (s/N): ").strip().lower()
-    if choice != "s":
-        return
+def _package_license(record: Dict[str, Any], url: str, key: str) -> Tuple[bool, str]:
     try:
         from tools.build_executable import build_for_license
     except Exception as exc:  # pragma: no cover - entorno sin módulo
-        warn(f"No se pudo importar el generador de ejecutables: {exc}")
+        return False, f"No se pudo importar el generador de ejecutables: {exc}"
+
+    success, _output, message = build_for_license(record, url, key)
+    if success:
+        return True, message
+    return False, message
+
+
+def _build_executable(record: Dict[str, Any], url: str, key: str) -> None:
+    choice = ask("¿Generar build para esta licencia? (s/N): ").strip().lower()
+    if choice != "s":
+        warn("Operación cancelada.")
         press_enter()
         return
 
-    success, output, message = build_for_license(record, url, key)
+    success, message = _package_license(record, url, key)
     if success:
         ok(message)
     else:
@@ -426,7 +481,7 @@ def _create_license(url: str, key: str) -> None:
         warn("Se requiere un nombre de cliente.")
         press_enter()
         return
-    duration = ask_int("Duración en días (mínimo 1): ", min_value=1, default=30)
+    duration = ask_int("Duración en días (mínimo 30): ", min_value=30, default=30)
     issued = dt.datetime.now(dt.timezone.utc)
     expires = issued + dt.timedelta(days=duration)
     payload = {
@@ -452,6 +507,33 @@ def _create_license(url: str, key: str) -> None:
     else:
         ok("Licencia creada.")
         press_enter()
+
+
+def _select_and_manage() -> None:
+    records = _fetch_licenses()
+    if not records:
+        press_enter()
+        return
+    record = _select_license(records)
+    if not record:
+        return
+    _license_actions_loop(record["license_key"])
+
+
+def _select_and_package(url: str, key: str) -> None:
+    records = _fetch_licenses()
+    if not records:
+        press_enter()
+        return
+    record = _select_license(records)
+    if not record:
+        return
+    success, message = _package_license(record, url, key)
+    if success:
+        ok(message)
+    else:
+        warn(message)
+    press_enter()
 
 
 def verify_license_remote(
@@ -527,24 +609,54 @@ def menu_deliver() -> None:
         print(full_line())
         print(style_text("Entrega al cliente", color=Fore.CYAN, bold=True))
         print(full_line())
-        print("1) Ver licencias activas")
-        print("2) Extender o desactivar licencias")
-        print("3) Crear nueva licencia")
+        print("1) Ver y gestionar licencias")
+        print("2) Crear nueva licencia")
+        print("3) Empaquetar build para cliente")
         print("4) Volver")
         print()
         choice = ask("Opción: ").strip()
         if choice == "1":
-            records = _fetch_licenses()
-            if records:
-                _render_table(records)
-            press_enter()
+            _select_and_manage()
         elif choice == "2":
-            _handle_existing()
-        elif choice == "3":
             _create_license(url or "", key or "")
+        elif choice == "3":
+            _select_and_package(url or "", key or "")
         elif choice == "4":
             break
         else:
             warn("Opción inválida.")
             press_enter()
+
+
+def ensure_supabase_credentials(interactive: bool = False) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Expone las credenciales de Supabase, solicitándolas si se requiere."""
+
+    return _ensure_supabase(interactive=interactive)
+
+
+def ensure_table_exists(url: str, key: str, *, interactive: bool = False) -> bool:
+    """Comprueba que la tabla de licencias exista (sin interacción por defecto)."""
+
+    return _ensure_table_ready(url, key, interactive=interactive)
+
+
+def list_licenses() -> List[Dict[str, Any]]:
+    """Devuelve todas las licencias disponibles en Supabase."""
+
+    return _fetch_licenses()
+
+
+def fetch_license(license_key: str) -> Optional[Dict[str, Any]]:
+    """Obtiene una licencia puntual."""
+
+    return _fetch_single(license_key)
+
+
+def package_license(license_key: str, url: str, key: str) -> Tuple[bool, str]:
+    """Genera artefactos limpios para la licencia indicada."""
+
+    record = _fetch_single(license_key)
+    if not record:
+        return False, "Licencia no encontrada."
+    return _package_license(record, url, key)
 
