@@ -53,17 +53,14 @@ def terminal_width(fallback: int = 80) -> int:
 
 def panel_width() -> int:
     width = terminal_width()
-    if width >= 100:
-        return 90
-    if width >= 70:
-        return width - 6
-    return width
+    target = 60
+    if width <= target:
+        return max(40, width)
+    return target
 
 
 def panel_padding() -> str:
-    width = panel_width()
-    total = terminal_width()
-    return " " * max(0, (total - width) // 2)
+    return ""
 
 
 def full_line(char: str = "─", *, color: str | None = None, bold: bool = False) -> str:
@@ -73,7 +70,24 @@ def full_line(char: str = "─", *, color: str | None = None, bold: bool = False
     return f"{panel_padding()}{styled}"
 
 
+def _align_label_value(text: str) -> str:
+    if ":" not in text:
+        return text
+    if "\n" in text:
+        return text
+    label, remainder = text.split(":", 1)
+    if not remainder:
+        return text
+    formatted_label = f"{label.strip()}:"
+    if not formatted_label:
+        return text
+    padded = formatted_label.ljust(24)
+    value = remainder.lstrip()
+    return f"{padded}{value}"
+
+
 def style_text(text: str, *, color: str | None = None, bold: bool = False) -> str:
+    text = _align_label_value(text)
     prefix = ""
     suffix = Style.RESET_ALL if color or bold else ""
     if color:
@@ -92,23 +106,27 @@ def clear_console() -> None:
 
 def print_header() -> None:
     clear_console()
+    pad = panel_padding()
     print()
-    print(full_line("═", color=Fore.MAGENTA, bold=True))
     heading = style_text(
-        em("🏆 HERRAMIENTA DE MENSAJERÍA DE IG 🏆"), color=Fore.MAGENTA, bold=True
+        em("🏆  HERRAMIENTA DE MENSAJERÍA DE IG  🏆"), color=Fore.MAGENTA, bold=True
     )
-    print(f"{panel_padding()}{heading}")
-    print(full_line("─", color=Fore.MAGENTA))
+    print(f"{pad}{heading}")
+    print(full_line("─", color=Fore.MAGENTA, bold=True))
     print()
+    section = style_text(em("📊  ESTADO GENERAL"), color=Fore.CYAN, bold=True)
+    print(f"{pad}{section}")
 
 
 def print_metrics(sent: int, errors: int) -> None:
+    pad = panel_padding()
+    title = style_text(em("📨  MENSAJERÍA"), color=Fore.CYAN, bold=True)
+    print(f"{pad}{title}")
+    print(full_line(color=Fore.BLUE))
     ok = style_text(f"Mensajes enviados: {sent}", color=Fore.GREEN, bold=True)
     fail = style_text(f"Mensajes con error: {errors}", color=Fore.RED, bold=True)
-    pad = panel_padding()
     print(f"{pad}{ok}")
     print(f"{pad}{fail}")
-    print()
 
 
 def print_section(title: str) -> None:
