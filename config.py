@@ -71,6 +71,7 @@ class Settings:
     supabase_url: str = ""
     supabase_key: str = ""
     openai_api_key: str = ""
+    client_distribution: bool = False
 
 
 def _validated_ranges(values: Dict[str, str]) -> Tuple[int, int, int, int]:
@@ -121,6 +122,9 @@ def load_settings() -> Settings:
         supabase_url=env_values.get("SUPABASE_URL", ""),
         supabase_key=env_values.get("SUPABASE_KEY", ""),
         openai_api_key=env_values.get("OPENAI_API_KEY", ""),
+        client_distribution=_coerce_bool(
+            env_values.get("CLIENT_DISTRIBUTION"), defaults.client_distribution
+        ),
     )
 
 

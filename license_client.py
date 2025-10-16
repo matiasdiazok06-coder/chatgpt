@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Dict
@@ -58,6 +59,8 @@ def launch_with_license() -> None:
         print(style_text(f"Vence: {expires}", color=Fore.GREEN))
     print(full_line(color=Fore.GREEN))
 
+    os.environ.setdefault("CLIENT_DISTRIBUTION", "1")
+    os.environ["LICENSE_ALREADY_VALIDATED"] = "1"
     from app import menu  # import tardío para evitar ciclos
 
     menu()

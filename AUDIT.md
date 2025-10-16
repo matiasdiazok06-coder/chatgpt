@@ -6,7 +6,8 @@
 - El flujo de envío (`ig.py`) ahora ofrece modo silencioso real con logs a `storage/logs/app.log`, seguimiento concurrente con semáforos por cuenta, tabla de progreso y manejo de errores interactivo (continuar o pausar).
 - El auto-responder (`responder.py`) ofrece submenú para guardar la API key y el system prompt, activar por alias, detener con Q y mostrar un resumen final mientras guarda logs silenciosos.
 - El menú Supabase incorpora submenú para configurar URL/KEY, probar estado y persistir cambios en `.env.local`.
-- `.env.example` documenta las nuevas variables (QUIET, MAX_CONCURRENCY, rangos de delay, claves de OpenAI/Supabase).
+- `.env.example` documenta las nuevas variables (QUIET, MAX_CONCURRENCY, rangos de delay, claves de OpenAI/Supabase) y advierte sobre `CLIENT_DISTRIBUTION` para builds licenciados.
+- El panel de licencias (opción 7) valida la existencia de la tabla en Supabase, maneja estados `active/expired/revoked`, permite revocar, reactivar o eliminar claves y genera bundles limpios + ejecutables con la licencia incrustada.
 
 ## Riesgos y consideraciones
 - Instagram puede exigir re-autenticación (`login_required`, `challenge_required`, etc.). Ahora el flujo pregunta si continuar sin la cuenta o pausar, pero sigue dependiendo de la intervención manual para resolver el challenge.
@@ -24,10 +25,11 @@
 2. Ajustar `MAX_CONCURRENCY` a 3 y lanzar "Enviar mensajes" para verificar la tabla en vivo con tres cuentas simultáneas y rotación tras finalizar delays.
 3. Cambiar `DELAY_MIN`/`DELAY_MAX` a 70–90 y luego 45–55 (vía `.env.local` o entradas manuales) para comprobar que no existen topes artificiales.
 4. Forzar un error de sesión (renombrando temporalmente el archivo de sesión) y confirmar que aparece el banner rojo con opciones [1]/[2].
-5. Activar QUIET=1 y revisar que la consola muestra solo resúmenes mientras `storage/logs/app.log` recibe los detalles.
-6. En el menú Supabase (opción 6), configurar URL y KEY, probar conexión y verificar que se escriben en `.env.local`.
-7. Configurar API key y system prompt desde el menú 5, reiniciar la app y confirmar que los valores persisten.
-8. Activar el auto-responder para un alias con varias cuentas, responder mensajes y detener con Q verificando el resumen final.
+-5. Activar QUIET=1 y revisar que la consola muestra solo resúmenes mientras `storage/logs/app.log` recibe los detalles.
+-6. En el menú Supabase (opción 6), configurar URL y KEY, probar conexión y verificar que se escriben en `.env.local`.
+-7. Configurar API key y system prompt desde el menú 5, reiniciar la app y confirmar que los valores persisten.
+-8. Activar el auto-responder para un alias con varias cuentas, responder mensajes y detener con Q verificando el resumen final.
+-9. En la opción 7 crear una licencia nueva, confirmar que la tabla `licenses` existe o seguir las instrucciones para crearla, y verificar que se generan tanto el ejecutable como el `.zip` limpio sin datos del desarrollador.
 
 ## Próximos pasos sugeridos
 - Añadir pruebas automatizadas que cubran el flujo con cuentas simuladas y validen el manejo interactivo de errores.

@@ -3,6 +3,7 @@
 import importlib
 import time
 
+from config import SETTINGS
 from storage import sent_totals
 from ui import Fore, full_line, print_header, print_metrics, style_text
 from utils import ask, em, press_enter, warn
@@ -62,13 +63,16 @@ def _print_dashboard() -> None:
     print(f"4) {em('📜')} Ver registros de envíos")
     print(f"5) {em('🤖')} Auto-responder con OpenAI")
     print(f"6) {em('📊')} Configurar Supabase")
-    print(f"7) {em('📦')} Entregar a cliente (licencia / EXE)")
+    if not SETTINGS.client_distribution:
+        print(f"7) {em('📦')} Entregar a cliente (licencia / EXE)")
     print(f"8) {em('🚪')} Salir")
     print()
     print(line)
 
 
 def menu():
+    if licensekit and hasattr(licensekit, "enforce_startup_validation"):
+        licensekit.enforce_startup_validation()
     while True:
         _print_dashboard()
         op = ask("Opción: ").strip()
@@ -84,7 +88,11 @@ def menu():
             responder.menu_autoresponder()
         elif op == "6" and storage:
             storage.menu_supabase()
-        elif op == "7" and licensekit:
+        elif (
+            op == "7"
+            and licensekit
+            and not SETTINGS.client_distribution
+        ):
             licensekit.menu_deliver()
         elif op == "8":
             print("Saliendo...")

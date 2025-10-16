@@ -5,7 +5,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
 import secrets
+import sys
+import textwrap
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
@@ -16,6 +21,22 @@ from utils import ask, ask_int, ok, press_enter, warn
 
 _TABLE = "licenses"
 _DATE_FMT = "%Y-%m-%d"
+_STATUS_ACTIVE = "active"
+_STATUS_EXPIRED = "expired"
+_STATUS_REVOKED = "revoked"
+_TABLE_SQL = textwrap.dedent(
+    """
+    create table if not exists public.licenses (
+        id uuid primary key default gen_random_uuid(),
+        client_name text not null,
+        license_key text not null unique,
+        expires_at timestamptz not null,
+        status text not null default 'active',
+        created_at timestamptz not null default now()
+    );
+    """
+).strip()
+_PAYLOAD_PATH = Path(__file__).resolve().parent / "storage" / "license_payload.json"
 
 
 def _supabase_credentials() -> Tuple[str, str]:
@@ -23,6 +44,33 @@ def _supabase_credentials() -> Tuple[str, str]:
     url = (env_local.get("SUPABASE_URL") or SETTINGS.supabase_url or "").strip()
     key = (env_local.get("SUPABASE_KEY") or SETTINGS.supabase_key or "").strip()
     return url, key
+
+
+def _missing_table_text() -> str:
+    return (
+        "La tabla 'licenses' no existe en Supabase.\n"
+        "Creala ejecutando en el editor SQL (schema public):\n"
+        f"{_TABLE_SQL}"
+    )
+
+
+def _show_missing_table_help() -> None:
+    message = _missing_table_text()
+    warn(message.splitlines()[0])
+    print(full_line(color=Fore.BLUE))
+    for line in message.splitlines()[1:]:
+        print(line)
+    print(full_line(color=Fore.BLUE))
+    press_enter()
+
+
+def _load_local_payload() -> Dict[str, Any]:
+    if not _PAYLOAD_PATH.exists():
+        return {}
+    try:
+        return json.loads(_PAYLOAD_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _ensure_supabase() -> Tuple[bool, Optional[str], Optional[str]]:
@@ -34,6 +82,14 @@ def _ensure_supabase() -> Tuple[bool, Optional[str], Optional[str]]:
     return True, url, key
 
 
+def _is_missing_table(error: Optional[str], status: int) -> bool:
+    if status == 404:
+        return True
+    if error and "PGRST208" in error:
+        return True
+    return False
+
+
 def _request(
     method: str,
     endpoint: str,
@@ -41,7 +97,7 @@ def _request(
     json_payload: Any | None = None,
     url_override: str | None = None,
     key_override: str | None = None,
-) -> Tuple[Any | None, Optional[str]]:
+) -> Tuple[Any | None, Optional[str], int]:
     url, key = _supabase_credentials()
     if url_override is not None:
         url = url_override
@@ -69,22 +125,39 @@ def _request(
             timeout=15,
         )
     except requests.RequestException as exc:  # pragma: no cover - red de Supabase
-        return None, str(exc)
+        return None, str(exc), 0
 
     if response.status_code >= 400:
         try:
             detail = response.json()
         except Exception:  # pragma: no cover - fallback legible
             detail = response.text
-        return None, f"{response.status_code}: {detail}"
+        return None, f"{response.status_code}: {detail}", response.status_code
 
     if not response.text:
-        return None, None
+        return None, None, response.status_code
 
     try:
-        return response.json(), None
+        return response.json(), None, response.status_code
     except ValueError:
-        return response.text, None
+        return response.text, None, response.status_code
+
+
+def _ensure_table_ready(url: str, key: str) -> bool:
+    _, error, status = _request(
+        "get",
+        f"{_TABLE}?select=license_key&limit=1",
+        url_override=url,
+        key_override=key,
+    )
+    if _is_missing_table(error, status):
+        _show_missing_table_help()
+        return False
+    if error:
+        warn(f"No se pudo comprobar la tabla de licencias: {error}")
+        press_enter()
+        return False
+    return True
 
 
 def _parse_iso(value: str | None) -> Optional[dt.datetime]:
@@ -108,10 +181,11 @@ def _is_expired(record: Dict[str, Any]) -> bool:
 
 
 def _status_label(record: Dict[str, Any]) -> Tuple[str, str]:
-    if not record.get("active", False):
-        return "Inactiva", Fore.YELLOW
-    if _is_expired(record):
-        return "Vencida", Fore.RED
+    status = str(record.get("status", "")).lower()
+    if status == _STATUS_REVOKED:
+        return "Revocada", Fore.RED
+    if status == _STATUS_EXPIRED or _is_expired(record):
+        return "Vencida", Fore.YELLOW
     return "Activa", Fore.GREEN
 
 
@@ -122,8 +196,21 @@ def _format_date(value: str | None) -> str:
     return parsed.strftime(_DATE_FMT)
 
 
+def _days_left(record: Dict[str, Any]) -> str:
+    expires = _parse_iso(record.get("expires_at"))
+    if not expires:
+        return "-"
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=dt.timezone.utc)
+    now = dt.datetime.now(dt.timezone.utc)
+    delta = expires - now
+    if delta.total_seconds() <= 0:
+        return "0"
+    return str(int(delta.total_seconds() // 86400))
+
+
 def _render_table(records: Iterable[Dict[str, Any]]) -> None:
-    rows: List[Tuple[str, str, str, str, str, str]] = []
+    rows: List[Tuple[str, str, str, str, str, str, str]] = []
     for idx, rec in enumerate(records, start=1):
         status, color = _status_label(rec)
         status_txt = style_text(status, color=color, bold=True)
@@ -132,10 +219,10 @@ def _render_table(records: Iterable[Dict[str, Any]]) -> None:
                 str(idx),
                 rec.get("client_name", "-"),
                 rec.get("license_key", "-"),
-                _format_date(rec.get("issued_at")),
+                _format_date(rec.get("created_at")),
                 _format_date(rec.get("expires_at")),
+                _days_left(rec),
                 status_txt,
-                str(rec.get("activations", 0)),
             )
         )
 
@@ -143,7 +230,7 @@ def _render_table(records: Iterable[Dict[str, Any]]) -> None:
         warn("No hay licencias registradas.")
         return
 
-    headers = ("#", "Cliente", "Key", "Inicio", "Vence", "Estado", "Activaciones")
+    headers = ("#", "Cliente", "Key", "Creada", "Vence", "Días", "Estado")
     widths = [max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(headers)]
     line = full_line(color=Fore.BLUE)
     print(line)
@@ -157,7 +244,10 @@ def _render_table(records: Iterable[Dict[str, Any]]) -> None:
 
 
 def _fetch_licenses() -> List[Dict[str, Any]]:
-    data, error = _request("get", f"{_TABLE}?select=*")
+    data, error, status = _request("get", f"{_TABLE}?select=*")
+    if _is_missing_table(error, status):
+        _show_missing_table_help()
+        return []
     if error:
         warn(f"No se pudieron obtener licencias: {error}")
         return []
@@ -192,7 +282,10 @@ def _select_license(records: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 def _update_license(license_key: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     endpoint = f"{_TABLE}?license_key=eq.{license_key}"
-    data, error = _request("patch", endpoint, json_payload=payload)
+    data, error, status = _request("patch", endpoint, json_payload=payload)
+    if _is_missing_table(error, status):
+        _show_missing_table_help()
+        return None
     if error:
         warn(f"No se pudo actualizar la licencia: {error}")
         press_enter()
@@ -210,19 +303,39 @@ def _extend_license(record: Dict[str, Any]) -> None:
     extra_days = ask_int("Cantidad de días a extender (>=1): ", min_value=1, default=30)
     current_exp = _parse_iso(record.get("expires_at")) or dt.datetime.now(dt.timezone.utc)
     new_exp = current_exp + dt.timedelta(days=extra_days)
-    payload = {"expires_at": new_exp.astimezone(dt.timezone.utc).isoformat()}
+    payload = {
+        "expires_at": new_exp.astimezone(dt.timezone.utc).isoformat(),
+        "status": _STATUS_ACTIVE,
+    }
     _update_license(record["license_key"], payload)
 
 
-def _toggle_active(record: Dict[str, Any], desired: bool) -> None:
-    status = "activar" if desired else "desactivar"
-    confirm = ask(f"Confirmás {status} la licencia? (s/N): ").strip().lower()
+def _update_status(record: Dict[str, Any], status: str, verb: str) -> None:
+    confirm = ask(f"Confirmás {verb} la licencia? (s/N): ").strip().lower()
     if confirm != "s":
         warn("Sin cambios.")
         press_enter()
         return
-    payload = {"active": desired}
+    payload = {"status": status}
     _update_license(record["license_key"], payload)
+
+
+def _delete_license(record: Dict[str, Any]) -> None:
+    confirm = ask("Confirmás eliminar la licencia? (s/N): ").strip().lower()
+    if confirm != "s":
+        warn("Sin cambios.")
+        press_enter()
+        return
+    endpoint = f"{_TABLE}?license_key=eq.{record['license_key']}"
+    _, error, status = _request("delete", endpoint)
+    if _is_missing_table(error, status):
+        _show_missing_table_help()
+        return
+    if error:
+        warn(f"No se pudo eliminar la licencia: {error}")
+    else:
+        ok("Licencia eliminada.")
+    press_enter()
 
 
 def _handle_existing() -> None:
@@ -240,23 +353,29 @@ def _handle_existing() -> None:
         print(full_line())
         _render_table([record])
         print("1) Extender vigencia")
-        print("2) Desactivar")
-        if not record.get("active", False):
-            print("3) Reactivar")
-            print("4) Volver")
-        else:
-            print("3) Volver")
+        print("2) Revocar licencia")
+        print("3) Reactivar licencia")
+        print("4) Eliminar licencia")
+        print("5) Volver")
         choice = ask("Opción: ").strip()
+        status = str(record.get("status", "")).lower()
         if choice == "1":
             _extend_license(record)
             record = _fetch_single(record["license_key"]) or record
         elif choice == "2":
-            _toggle_active(record, False)
+            _update_status(record, _STATUS_REVOKED, "revocar")
             record = _fetch_single(record["license_key"]) or record
-        elif choice == "3" and not record.get("active", False):
-            _toggle_active(record, True)
-            record = _fetch_single(record["license_key"]) or record
-        elif (choice == "3" and record.get("active", False)) or (choice == "4" and not record.get("active", False)):
+        elif choice == "3":
+            if status == _STATUS_ACTIVE:
+                warn("La licencia ya está activa.")
+                press_enter()
+            else:
+                _update_status(record, _STATUS_ACTIVE, "reactivar")
+                record = _fetch_single(record["license_key"]) or record
+        elif choice == "4":
+            _delete_license(record)
+            break
+        elif choice == "5":
             break
         else:
             warn("Opción inválida.")
@@ -265,7 +384,10 @@ def _handle_existing() -> None:
 
 def _fetch_single(license_key: str) -> Optional[Dict[str, Any]]:
     endpoint = f"{_TABLE}?license_key=eq.{license_key}&select=*"
-    data, error = _request("get", endpoint)
+    data, error, status = _request("get", endpoint)
+    if _is_missing_table(error, status):
+        _show_missing_table_help()
+        return None
     if error or not isinstance(data, list):
         return None
     return data[0] if data else None
@@ -310,12 +432,14 @@ def _create_license(url: str, key: str) -> None:
     payload = {
         "license_key": _generate_key(),
         "client_name": client,
-        "issued_at": issued.isoformat(),
-        "expires_at": expires.isoformat(),
-        "active": True,
-        "activations": 0,
+        "created_at": issued.astimezone(dt.timezone.utc).isoformat(),
+        "expires_at": expires.astimezone(dt.timezone.utc).isoformat(),
+        "status": _STATUS_ACTIVE,
     }
-    data, error = _request("post", _TABLE, json_payload=[payload])
+    data, error, status = _request("post", _TABLE, json_payload=[payload])
+    if _is_missing_table(error, status):
+        _show_missing_table_help()
+        return
     if error:
         warn(f"No se pudo crear la licencia: {error}")
         press_enter()
@@ -342,24 +466,61 @@ def verify_license_remote(
     if not supabase_url or not supabase_key:
         return False, "Faltan credenciales de Supabase.", {}
     endpoint = f"{_TABLE}?license_key=eq.{license_key}&select=*"
-    data, error = _request(
+    data, error, status = _request(
         "get", endpoint, url_override=supabase_url, key_override=supabase_key
     )
+    if _is_missing_table(error, status):
+        return False, _missing_table_text(), {}
     if error:
         return False, error, {}
     if not isinstance(data, list) or not data:
         return False, "Licencia inexistente.", {}
     record = data[0]
-    if not record.get("active", False):
-        return False, "Licencia inactiva.", record
-    if _is_expired(record):
+    status_value = str(record.get("status", "")).lower()
+    if status_value == _STATUS_REVOKED:
+        return False, "Licencia revocada.", record
+    if status_value == _STATUS_EXPIRED or _is_expired(record):
         return False, "Licencia vencida.", record
+    if status_value and status_value != _STATUS_ACTIVE:
+        return False, f"Licencia en estado {status_value}.", record
     return True, "", record
 
 
+def enforce_startup_validation() -> None:
+    if os.environ.get("LICENSE_ALREADY_VALIDATED") == "1":
+        return
+    payload = _load_local_payload()
+    require = SETTINGS.client_distribution or bool(payload)
+    if not require:
+        return
+    if not payload:
+        print(full_line(color=Fore.RED))
+        print(style_text("No se encontró licencia local", color=Fore.RED, bold=True))
+        print(full_line(color=Fore.RED))
+        sys.exit(2)
+
+    license_key = payload.get("license_key", "")
+    supabase_url = payload.get("supabase_url", "")
+    supabase_key = payload.get("supabase_key", "")
+
+    ok, message, _ = verify_license_remote(license_key, supabase_url, supabase_key)
+    if not ok:
+        print(full_line(color=Fore.RED))
+        print(style_text("Licencia inválida", color=Fore.RED, bold=True))
+        print(message or "No se pudo validar la licencia.")
+        print(full_line(color=Fore.RED))
+        sys.exit(2)
+
+
 def menu_deliver() -> None:
+    if SETTINGS.client_distribution:
+        warn("Esta opción no está disponible en builds de cliente.")
+        press_enter()
+        return
     ready, url, key = _ensure_supabase()
     if not ready:
+        return
+    if not _ensure_table_ready(url or "", key or ""):
         return
     while True:
         banner()
